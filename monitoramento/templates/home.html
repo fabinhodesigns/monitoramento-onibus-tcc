@@ -3,79 +3,139 @@
 <head>
     <meta charset="UTF-8">
     <title>Monitoramento de Ônibus</title>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-core.js"></script>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-service.js"></script>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-ui.js"></script>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-mapevents.js"></script>
+    <link rel="stylesheet" type="text/css" href="https://js.api.here.com/v3/3.1/mapsjs-ui.css" />
+    <style>
+        /* Caixa azul do tempo estimado */
+        .tempo-label {
+            background-color: rgba(0, 0, 255, 0.9); /* Azul */
+            color: white;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            text-align: center;
+            white-space: nowrap;
+            box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.3);
+        }
+        /* Ajuste para melhor exibição */
+        #mapa {
+            width: 100%;
+            height: 500px;
+        }
+    </style>
 </head>
 <body>
     <h1>Monitoramento Inteligente de Ônibus</h1>
 
-    <h2>🚏 Parada:</h2>
-    <ul>
-        <li><strong>Nome:</strong> {{ parada.nome }}</li>
-        <li><strong>Latitude:</strong> {{ parada.latitude }}</li>
-        <li><strong>Longitude:</strong> {{ parada.longitude }}</li>
-    </ul>
-
-    <h2>🚌 Ônibus:</h2>
-    <ul>
-        <li><strong>Número:</strong> {{ onibus.numero }}</li>
-        <li><strong>Latitude:</strong> {{ onibus.latitude }}</li>
-        <li><strong>Longitude:</strong> {{ onibus.longitude }}</li>
-        <li><strong>Última atualização:</strong> {{ onibus.ultima_atualizacao }}</li>
-    </ul>
-
-    <!-- ... (conteúdo anterior) -->
-
-    <h2>🗺️ Rota no Google Maps:</h2>
-    <div id="mapa" style="width:100%; height:500px;"></div>
+    <h2>🗺️ Rota no HERE Maps:</h2>
+    <div id="mapa"></div>
 
     <script>
     function initMap() {
-        const coordOnibus = { lat: {{ onibus.latitude }}, lng: {{ onibus.longitude }} };
-        const coordParada = { lat: parseFloat('{{ parada.latitude }}'), lng: parseFloat('{{ parada.longitude }}') };
-
-        const mapa = new google.maps.Map(document.getElementById('mapa'), {
-            zoom: 14,
-            center: coordOnibus
+        const platform = new H.service.Platform({
+            'apikey': 'nchTlZMEpb97sB_zT9jZRhPUP5jQZpczxEoPg27Jxrw'  // Substitua pela sua API Key do HERE
         });
 
-        // Exibir marcadores
-        new google.maps.Marker({
-            position: coordOnibus,
-            map: mapa,
-            label: '🚌'
-        });
+        // Usar o mapa padrão (sem satélite) para evitar erro 401
+        const defaultLayers = platform.createDefaultLayers();
+        const map = new H.Map(
+            document.getElementById('mapa'),
+            defaultLayers.vector.normal.map,  // Mapa padrão (SEM SATÉLITE)
+            {
+                zoom: 14,
+                center: { lat: parseFloat('{{ onibus.latitude }}'), lng: parseFloat('{{ onibus.longitude }}') }
+            }
+        );
 
-        new google.maps.Marker({
-            position: coordParada,
-            map: mapa,
-            label: '🚏'
-        });
+        // Inicializar eventos e interface corretamente
+        new H.mapevents.Behavior(new H.mapevents.MapEvents(map));
+        const ui = H.ui.UI.createDefault(map, defaultLayers);
 
-        // Exibir a rota entre ônibus e parada
-        const directionsService = new google.maps.DirectionsService();
-        const directionsRenderer = new google.maps.DirectionsRenderer();
+        const onibusCoord = { lat: parseFloat('{{ onibus.latitude }}'), lng: parseFloat('{{ onibus.longitude }}') };
+        const paradaCoord = { lat: parseFloat('{{ parada.latitude }}'), lng: parseFloat('{{ parada.longitude }}') };
 
-        directionsRenderer.setMap(mapa);
+        // Adicionar marcadores do ônibus e da parada
+        const onibusMarker = new H.map.Marker(onibusCoord);
+        const paradaMarker = new H.map.Marker(paradaCoord);
+        map.addObject(onibusMarker);
+        map.addObject(paradaMarker);
 
-        const request = {
-            origin: coordOnibus,
-            destination: coordParada,
-            travelMode: 'DRIVING'
+        // Criar serviço de roteamento
+        const router = platform.getRoutingService(null, 8);
+        const routingParameters = {
+            'transportMode': 'bus',
+            'origin': `${onibusCoord.lat},${onibusCoord.lng}`,
+            'destination': `${paradaCoord.lat},${paradaCoord.lng}`,
+            'return': 'summary,polyline'
         };
 
-        directionsService.route(request, function(result, status) {
-            if (status === 'OK') {
-                directionsRenderer.setDirections(result);
+        router.calculateRoute(routingParameters, (result) => {
+            if (result.routes.length) {
+                const route = result.routes[0];
+                const routeShape = route.sections[0].polyline;
+                const linestring = H.geo.LineString.fromFlexiblePolyline(routeShape);
+
+                // Desenhar linha azul para a rota
+                const routePolyline = new H.map.Polyline(linestring, {
+                    style: { strokeColor: 'blue', lineWidth: 6 }
+                });
+
+                map.addObject(routePolyline);
+                map.getViewModel().setLookAtData({ bounds: routePolyline.getBoundingBox() });
+
+                // Calcular o ponto médio da rota para exibir o tempo estimado
+                const meioRota = linestring.extractPoint(Math.floor(linestring.getPointCount() / 2));
+
+                // Mostrar tempo estimado
+                const tempoEstimado = route.sections[0].summary.duration / 60;  // Convertendo para minutos
+                const tempoTexto = `${tempoEstimado.toFixed(1)} min`;
+
+                // Criar um marcador de tempo no meio da rota
+                const tempoLabel = new H.map.DomMarker(meioRota, {
+                    icon: new H.map.DomIcon(`<div class="tempo-label">${tempoTexto}</div>`)
+                });
+
+                map.addObject(tempoLabel);
             } else {
-                alert('Erro ao calcular rota: ' + status);
+                console.error("Rota não encontrada.");
             }
+        }, (error) => {
+            console.error('Erro ao calcular rota:', error);
         });
     }
+
+    // Adicionar tempo de espera antes de carregar o mapa
+    window.onload = function () {
+        setTimeout(initMap, 500);  // Aguarda meio segundo antes de carregar o mapa
+    };
     </script>
 
-    <!-- sua chave API aqui -->
-    <script async defer
-        src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAB4XzkFaozx9kHkUA6kl9Y49AyqtpCrbc&callback=initMap">
+    <script>
+        function atualizarLocalizacaoUsuario() {
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(position => {
+                    const latitude = position.coords.latitude;
+                    const longitude = position.coords.longitude;
+        
+                    // Enviar a localização para o servidor
+                    fetch('/api/atualizar_localizacao_usuario/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ latitude, longitude })
+                    }).then(response => console.log("Localização enviada:", response))
+                    .catch(error => console.error("Erro ao enviar localização:", error));
+                }, error => console.error("Erro ao obter localização:", error));
+            } else {
+                alert("Geolocalização não suportada!");
+            }
+        }
+        
+        // Atualiza a cada 5 segundos
+        setInterval(atualizarLocalizacaoUsuario, 5000);
     </script>
-
 </body>
 </html>
